@@ -63,3 +63,13 @@ docs(pipeline):
 - Добавлены правила маршрутизации OCR, VLM и LLM
 - Зафиксированы этапы очереди обработки
 ```
+
+## Текущий крупный коммит
+
+```text
+feat(live-camera):
+- Реализован потоковый контур Gemma для Markdown-блоков заметки
+- Добавлен гибридный OCR gate с Tesseract rus+eng и фильтром шумных строк
+- Пересобран редактор заметки вокруг NoteBlock, Markwon preview и edit sheet
+- Обновлена документация по live states, stream events и ручному тестированию
+```

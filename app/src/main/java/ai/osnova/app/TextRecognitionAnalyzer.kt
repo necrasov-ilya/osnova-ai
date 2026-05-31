@@ -53,6 +53,12 @@ class TextRecognitionAnalyzer(
         } else {
             null
         }
+        if (bitmap != null && !bitmap.hasReadableFrameQuality()) {
+            onState("держу кадр")
+            busy = false
+            imageProxy.close()
+            return
+        }
         val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
         recognizer.process(image)
             .addOnSuccessListener(callbackExecutor) { result ->
@@ -199,5 +205,32 @@ class TextRecognitionAnalyzer(
         val targetWidth = (width * scale).toInt().coerceAtLeast(1)
         val targetHeight = (height * scale).toInt().coerceAtLeast(1)
         return Bitmap.createScaledBitmap(this, targetWidth, targetHeight, true)
+    }
+
+    private fun Bitmap.hasReadableFrameQuality(): Boolean {
+        val stepX = (width / 28).coerceAtLeast(1)
+        val stepY = (height / 28).coerceAtLeast(1)
+        var count = 0
+        var sum = 0.0
+        var sumSquares = 0.0
+        var edgeEnergy = 0.0
+        var previous = -1
+        for (y in 0 until height step stepY) {
+            previous = -1
+            for (x in 0 until width step stepX) {
+                val pixel = getPixel(x, y)
+                val luma = ((pixel shr 16 and 0xff) * 0.299 + (pixel shr 8 and 0xff) * 0.587 + (pixel and 0xff) * 0.114)
+                sum += luma
+                sumSquares += luma * luma
+                if (previous >= 0) edgeEnergy += kotlin.math.abs(luma - previous)
+                previous = luma.toInt()
+                count += 1
+            }
+        }
+        if (count == 0) return false
+        val mean = sum / count
+        val variance = (sumSquares / count) - mean * mean
+        val edge = edgeEnergy / count
+        return mean in 38.0..226.0 && variance > 120.0 && edge > 4.0
     }
 }

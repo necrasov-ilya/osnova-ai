@@ -59,6 +59,15 @@ object DraftBuilder {
         val longWords = tokens.count { token -> token.count { it.isLetter() } >= 4 }
         if (longWords == 0 && useful < 8) return false
 
+        val cyrillicLetters = count { it in 'А'..'я' || it == 'Ё' || it == 'ё' }
+        val latinTokens = tokens.filter { token -> token.any { it in 'A'..'Z' || it in 'a'..'z' } }
+        if (cyrillicLetters == 0 && latinTokens.size >= 4 && longWords == 0) {
+            val averageLatinLength = latinTokens
+                .map { token -> token.count { it.isLetter() } }
+                .average()
+            if (averageLatinLength < 3.2) return false
+        }
+
         val mixedNoise = tokens.count { token ->
             token.any { it in 'А'..'я' || it == 'Ё' || it == 'ё' } &&
                 token.any { it in 'A'..'Z' || it in 'a'..'z' }

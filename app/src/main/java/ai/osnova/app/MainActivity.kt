@@ -36,6 +36,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
+import io.noties.markwon.Markwon
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -45,17 +46,19 @@ class MainActivity : ComponentActivity() {
     private lateinit var themeStore: ThemeStore
     private lateinit var noteStore: NoteStore
     private lateinit var modelManager: ModelManager
+    private lateinit var markwon: Markwon
     private val insertEngine = InsertEngine()
 
     private var mode = OsnovaThemeMode.Mist
     private var colors = palette(OsnovaThemeMode.Mist)
     private var currentNote: Note? = null
-    private var bodyEditor: EditText? = null
+    private var blockList: LinearLayout? = null
+    private var rawDraftView: TextView? = null
     private var queueList: LinearLayout? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var analyzer: TextRecognitionAnalyzer? = null
     private var pendingCameraHost: FrameLayout? = null
-    private val pendingGemma = mutableMapOf<Long, Pair<String, Job>>()
+    private val pendingGemma = mutableMapOf<Long, PendingGeneration>()
     private var gemmaDisabledUntil = 0L
     private var lastGemmaBusyShownAt = 0L
     private val cameraExecutor = Executors.newSingleThreadExecutor()
@@ -66,19 +69,61 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Камера нужна для live-конспекта", Toast.LENGTH_SHORT).show()
         }
     }
+
+    private data class PendingGeneration(
+        val blockId: Long,
+        val fallbackMarkdown: String,
+        val timeoutJob: Job,
+        val stream: StringBuilder = StringBuilder(),
+        var rawDraft: String = fallbackMarkdown
+    )
+
     private val gemmaReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action != GemmaWorkerService.ACTION_RESULT) return
+            if (intent.action != GemmaWorkerService.ACTION_STREAM) return
             val requestId = intent.getLongExtra(GemmaWorkerService.EXTRA_REQUEST_ID, -1L)
-            val pending = pendingGemma.remove(requestId) ?: return
-            pending.second.cancel()
+            val pending = pendingGemma[requestId] ?: return
+            val event = intent.getStringExtra(GemmaWorkerService.EXTRA_EVENT)
             val error = intent.getStringExtra(GemmaWorkerService.EXTRA_ERROR)
             val result = intent.getStringExtra(GemmaWorkerService.EXTRA_RESULT_TEXT).orEmpty()
-            if (error != null) {
-                gemmaDisabledUntil = SystemClock.elapsedRealtime() + GEMMA_COOLDOWN_MS
-                addQueue("Gemma", gemmaQueueError(error), false)
+            when (event) {
+                GemmaWorkerService.EVENT_START -> {
+                    addQueue("Gemma", "старт", false)
+                    setProcessingStage(ProcessingStage.GeneratingMarkdown, "Gemma готовит Markdown")
+                }
+
+                GemmaWorkerService.EVENT_RAW_DRAFT -> {
+                    pending.rawDraft = result.ifBlank { pending.fallbackMarkdown }
+                    showRawDraft(pending.rawDraft, pending.stream.length)
+                    addQueue("RAW", "черновик", false)
+                }
+
+                GemmaWorkerService.EVENT_DELTA -> {
+                    pending.stream.append(result)
+                    showRawDraft(pending.rawDraft, pending.stream.length)
+                    updateCurrentBlock(pending.blockId, pending.stream.toString(), NoteBlockStatus.Generating)
+                }
+
+                GemmaWorkerService.EVENT_DONE -> {
+                    pending.timeoutJob.cancel()
+                    pendingGemma.remove(requestId)
+                    val finalMarkdown = result.ifBlank { pending.stream.toString() }.ifBlank { pending.fallbackMarkdown }
+                    updateCurrentBlock(pending.blockId, finalMarkdown, NoteBlockStatus.Ready)
+                    hideRawDraft()
+                    addQueue("Блок", "вставлен", true)
+                    setProcessingStage(ProcessingStage.Inserted, "готово")
+                }
+
+                GemmaWorkerService.EVENT_ERROR -> {
+                    pending.timeoutJob.cancel()
+                    pendingGemma.remove(requestId)
+                    gemmaDisabledUntil = SystemClock.elapsedRealtime() + GEMMA_COOLDOWN_MS
+                    updateCurrentBlock(pending.blockId, result.ifBlank { pending.fallbackMarkdown }, NoteBlockStatus.Failed)
+                    hideRawDraft()
+                    addQueue("Gemma", gemmaQueueError(error.orEmpty()), false)
+                    setProcessingStage(ProcessingStage.Failed, "fallback")
+                }
             }
-            insertRecognizedBlock(result.ifBlank { pending.first })
         }
     }
 
@@ -87,6 +132,7 @@ class MainActivity : ComponentActivity() {
         themeStore = ThemeStore(this)
         noteStore = NoteStore(this)
         modelManager = ModelManager(this)
+        markwon = Markwon.create(this)
         mode = themeStore.current()
         colors = palette(mode)
         lifecycleScope.launch {
@@ -95,7 +141,7 @@ class MainActivity : ComponentActivity() {
         ContextCompat.registerReceiver(
             this,
             gemmaReceiver,
-            IntentFilter(GemmaWorkerService.ACTION_RESULT),
+            IntentFilter(GemmaWorkerService.ACTION_STREAM),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
     }
@@ -256,19 +302,21 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(queueList, matchHeight(dp(54)).apply { topMargin = dp(10) })
 
-        bodyEditor = EditText(this).apply {
-            setText(note.body)
-            hint = "Конспект появится здесь"
-            gravity = Gravity.TOP or Gravity.START
-            textSize = 20f
-            typeface = Typeface.create("serif", Typeface.NORMAL)
-            setTextColor(colors.text)
-            setHintTextColor(colors.muted)
+        rawDraftView = TextView(this).apply {
+            visibility = View.GONE
+            textSize = 13f
+            setTextColor(colors.muted)
+            typeface = Typeface.MONOSPACE
             setPadding(dp(18), dp(18), dp(18), dp(18))
-            background = round(colors.surface, dp(24), colors.border)
-            minLines = 10
+            background = round(colors.surfaceStrong, dp(20), colors.border)
         }
-        root.addView(bodyEditor, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(12) })
+        root.addView(rawDraftView, matchWrap().apply { topMargin = dp(8) })
+
+        blockList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val scroll = ScrollView(this).apply { addView(blockList) }
+        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(12) })
 
         val bottom = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -294,6 +342,7 @@ class MainActivity : ComponentActivity() {
         root.addView(bottom, matchHeight(dp(78)).apply { topMargin = dp(10) })
 
         setContentView(root)
+        renderBlocks()
     }
 
     private fun openCameraPanel(host: FrameLayout) {
@@ -378,6 +427,7 @@ class MainActivity : ComponentActivity() {
         val draft = DraftBuilder.build(raw, source = "camera")
         if (draft == null) {
             addQueue("Gate", "шум", false)
+            setProcessingStage(ProcessingStage.Sampling, "держу кадр")
             return
         }
 
@@ -390,23 +440,46 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        val note = currentNote ?: return
         addQueue("OCR", "текст найден", false)
+        setProcessingStage(ProcessingStage.RawDraft, "есть черновик")
         val fallbackBlock = draft.text
+        if (!insertEngine.shouldInsert(note.markdown, fallbackBlock)) {
+            addQueue("Gate", "похоже", false)
+            return
+        }
+        val requestId = System.currentTimeMillis()
+        val blockId = requestId
+        currentNote = NoteBlockEngine.appendGenerating(
+            note = note,
+            blockId = blockId,
+            rawSource = fallbackBlock,
+            markdown = ""
+        )
+        saveCurrentNote()
+        renderBlocks()
+        showRawDraft(fallbackBlock, 0)
+
         if (SystemClock.elapsedRealtime() < gemmaDisabledUntil) {
             addQueue("Gemma", "пауза", false)
-            insertRecognizedBlock(fallbackBlock)
+            updateCurrentBlock(blockId, fallbackBlock, NoteBlockStatus.Ready)
+            hideRawDraft()
             return
         }
 
-        val requestId = System.currentTimeMillis()
         val timeoutJob = lifecycleScope.launch {
             delay(28_000)
             pendingGemma.remove(requestId)
             gemmaDisabledUntil = SystemClock.elapsedRealtime() + GEMMA_COOLDOWN_MS
             addQueue("Gemma", "таймаут", false)
-            insertRecognizedBlock(fallbackBlock)
+            updateCurrentBlock(blockId, fallbackBlock, NoteBlockStatus.Failed)
+            hideRawDraft()
         }
-        pendingGemma[requestId] = fallbackBlock to timeoutJob
+        pendingGemma[requestId] = PendingGeneration(
+            blockId = blockId,
+            fallbackMarkdown = fallbackBlock,
+            timeoutJob = timeoutJob
+        )
         val intent = Intent(this, GemmaWorkerService::class.java)
             .setAction(GemmaWorkerService.ACTION_SUMMARIZE)
             .putExtra(GemmaWorkerService.EXTRA_REQUEST_ID, requestId)
@@ -419,27 +492,212 @@ class MainActivity : ComponentActivity() {
             pendingGemma.remove(requestId)
             gemmaDisabledUntil = SystemClock.elapsedRealtime() + GEMMA_COOLDOWN_MS
             addQueue("Gemma", "не запущена", false)
-            insertRecognizedBlock(fallbackBlock)
-        }
-    }
-
-    private fun insertRecognizedBlock(block: String) {
-        val editor = bodyEditor ?: return
-        val current = editor.text.toString()
-        if (insertEngine.shouldInsert(current, block)) {
-            editor.setText(insertEngine.insert(current, block))
-            editor.setSelection(editor.text.length)
-            saveCurrentNote()
-            addQueue("Блок", "добавлен", true)
+            updateCurrentBlock(blockId, fallbackBlock, NoteBlockStatus.Failed)
+            hideRawDraft()
         }
     }
 
     private fun saveCurrentNote() {
         val note = currentNote ?: return
-        val body = bodyEditor?.text?.toString() ?: note.body
-        val saved = note.copy(body = body)
+        val saved = note.copy(body = note.markdown)
         currentNote = saved
         noteStore.save(saved)
+    }
+
+    private fun updateCurrentBlock(blockId: Long, markdown: String, status: NoteBlockStatus) {
+        val note = currentNote ?: return
+        currentNote = NoteBlockEngine.update(note, blockId, markdown, status)
+        saveCurrentNote()
+        renderBlocks()
+    }
+
+    private fun renderBlocks() {
+        val list = blockList ?: return
+        val note = currentNote ?: return
+        list.removeAllViews()
+        if (note.blocks.isEmpty()) {
+            list.addView(
+                TextView(this).apply {
+                    text = "Конспект появится здесь"
+                    textSize = 20f
+                    setTextColor(colors.muted)
+                    typeface = Typeface.create("serif", Typeface.NORMAL)
+                    gravity = Gravity.CENTER
+                    setPadding(dp(18), dp(34), dp(18), dp(34))
+                    background = round(colors.surface, dp(24), colors.border)
+                },
+                matchWrap()
+            )
+            return
+        }
+        note.blocks.forEach { block ->
+            list.addView(blockView(block), matchWrap().apply { bottomMargin = dp(10) })
+        }
+    }
+
+    private fun blockView(block: NoteBlock): View {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            background = round(
+                color = colors.surface,
+                radius = dp(22),
+                stroke = when (block.status) {
+                    NoteBlockStatus.Generating -> colors.accent
+                    NoteBlockStatus.Failed -> colors.accentSoft
+                    else -> colors.border
+                }
+            )
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val statusText = when (block.status) {
+            NoteBlockStatus.Generating -> "пишу"
+            NoteBlockStatus.Ready -> "готово"
+            NoteBlockStatus.Edited -> "изменено"
+            NoteBlockStatus.Failed -> "fallback"
+        }
+        header.addView(
+            text(statusText, 13, if (block.status == NoteBlockStatus.Generating) colors.accent else colors.muted, Typeface.DEFAULT_BOLD),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        if (block.status == NoteBlockStatus.Generating) {
+            val stop = smallPill("стоп")
+            stop.textSize = 12f
+            stop.setOnClickListener {
+                pendingGemma.entries.firstOrNull { it.value.blockId == block.id }?.let { entry ->
+                    entry.value.timeoutJob.cancel()
+                    pendingGemma.remove(entry.key)
+                }
+                updateCurrentBlock(block.id, block.markdown.ifBlank { block.rawSource }, NoteBlockStatus.Ready)
+                hideRawDraft()
+            }
+            header.addView(stop, LinearLayout.LayoutParams(dp(82), dp(38)))
+        }
+        container.addView(header)
+
+        val markdownView = TextView(this).apply {
+            textSize = 18f
+            setTextColor(colors.text)
+            typeface = Typeface.create("serif", Typeface.NORMAL)
+            setLineSpacing(0f, 1.08f)
+            setPadding(0, dp(8), 0, 0)
+        }
+        val markdown = block.markdown.ifBlank { "▌" }
+        markwon.setMarkdown(markdownView, markdown)
+        container.addView(markdownView, matchWrap())
+        container.setOnClickListener {
+            if (block.status != NoteBlockStatus.Generating) showBlockEditor(block)
+        }
+        return container
+    }
+
+    private fun showRawDraft(raw: String, generatedLength: Int) {
+        val view = rawDraftView ?: return
+        val remaining = (raw.length - generatedLength / 2).coerceAtLeast(48).coerceAtMost(raw.length)
+        val preview = raw.take(remaining)
+        view.text = "RAW\n$preview"
+        view.visibility = View.VISIBLE
+    }
+
+    private fun showBlockEditor(block: NoteBlock) {
+        val wrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), 0)
+        }
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = round(colors.accentSoft, dp(24), Color.TRANSPARENT)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+        }
+        val edit = EditText(this).apply {
+            setText(block.markdown)
+            minLines = 8
+            gravity = Gravity.TOP or Gravity.START
+            textSize = 17f
+            typeface = Typeface.MONOSPACE
+            setTextColor(colors.text)
+            setHintTextColor(colors.muted)
+            background = round(colors.surface, dp(18), colors.border)
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+        }
+        listOf(
+            "B" to { wrapSelection(edit, "**", "**") },
+            "I" to { wrapSelection(edit, "*", "*") },
+            "H1" to { prefixLines(edit, "# ") },
+            "•" to { prefixLines(edit, "- ") },
+            "”" to { prefixLines(edit, "> ") },
+            "`" to { wrapSelection(edit, "`", "`") }
+        ).forEach { (label, action) ->
+            val button = smallPill(label)
+            button.textSize = 13f
+            button.setOnClickListener { action() }
+            toolbar.addView(button, LinearLayout.LayoutParams(0, dp(38), 1f).apply { rightMargin = dp(4) })
+        }
+        wrapper.addView(toolbar, matchHeight(dp(52)))
+        wrapper.addView(edit, matchWrap().apply { topMargin = dp(10) })
+
+        AlertDialog.Builder(this)
+            .setTitle("Блок Markdown")
+            .setView(wrapper)
+            .setPositiveButton("Готово") { _, _ ->
+                val note = currentNote ?: return@setPositiveButton
+                currentNote = NoteBlockEngine.edit(note, block.id, edit.text.toString())
+                saveCurrentNote()
+                renderBlocks()
+            }
+            .setNeutralButton("Удалить") { _, _ ->
+                val note = currentNote ?: return@setNeutralButton
+                currentNote = NoteBlockEngine.remove(note, block.id)
+                saveCurrentNote()
+                renderBlocks()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun wrapSelection(edit: EditText, before: String, after: String) {
+        val start = edit.selectionStart.coerceAtLeast(0)
+        val end = edit.selectionEnd.coerceAtLeast(0)
+        val left = start.coerceAtMost(end)
+        val right = start.coerceAtLeast(end)
+        val text = edit.text
+        text.insert(right, after)
+        text.insert(left, before)
+        edit.setSelection(left + before.length, right + before.length)
+    }
+
+    private fun prefixLines(edit: EditText, prefix: String) {
+        val text = edit.text ?: return
+        val start = edit.selectionStart.coerceAtLeast(0)
+        val end = edit.selectionEnd.coerceAtLeast(start)
+        val lineStart = text.lastIndexOf('\n', (start - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
+        val lineEnd = text.indexOf('\n', end).let { if (it < 0) text.length else it }
+        val selected = text.substring(lineStart, lineEnd)
+        val replaced = selected.lineSequence().joinToString("\n") { line ->
+            if (line.startsWith(prefix)) line else prefix + line
+        }
+        text.replace(lineStart, lineEnd, replaced)
+        edit.setSelection((lineStart + replaced.length).coerceAtMost(text.length))
+    }
+
+    private fun hideRawDraft() {
+        rawDraftView?.visibility = View.GONE
+    }
+
+    private fun setProcessingStage(stage: ProcessingStage, detail: String) {
+        val label = when (stage) {
+            ProcessingStage.Sampling -> "Кадр"
+            ProcessingStage.StableRegion -> "Регион"
+            ProcessingStage.RawDraft -> "RAW"
+            ProcessingStage.GeneratingMarkdown -> "Markdown"
+            ProcessingStage.Inserted -> "Блок"
+            ProcessingStage.Failed -> "Fallback"
+        }
+        addQueue(label, detail, stage == ProcessingStage.Inserted)
     }
 
     private fun addQueue(title: String, detail: String, done: Boolean) {

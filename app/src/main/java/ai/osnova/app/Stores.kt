@@ -35,14 +35,17 @@ class NoteStore(context: Context) {
         return buildList {
             for (index in 0 until array.length()) {
                 val item = array.optJSONObject(index) ?: continue
+                val body = item.optString("body")
+                val createdAt = item.optLong("createdAt")
                 add(
                     Note(
-                        id = item.optLong("id"),
-                        title = item.optString("title"),
-                        body = item.optString("body"),
-                        createdAt = item.optLong("createdAt"),
-                        updatedAt = item.optLong("updatedAt")
-                    )
+                    id = item.optLong("id"),
+                    title = item.optString("title"),
+                    body = body,
+                    blocks = parseBlocks(item.optJSONArray("blocks"), body, createdAt),
+                    createdAt = createdAt,
+                    updatedAt = item.optLong("updatedAt")
+                )
                 )
             }
         }.sortedByDescending { it.updatedAt }
@@ -56,6 +59,7 @@ class NoteStore(context: Context) {
             id = now,
             title = title.ifBlank { "Новая заметка" },
             body = "",
+            blocks = emptyList(),
             createdAt = now,
             updatedAt = now
         )
@@ -75,12 +79,66 @@ class NoteStore(context: Context) {
                 JSONObject()
                     .put("id", note.id)
                     .put("title", note.title)
-                    .put("body", note.body)
+                    .put("body", note.markdown)
+                    .put("blocks", blocksToJson(note.blocks))
                     .put("createdAt", note.createdAt)
                     .put("updatedAt", note.updatedAt)
             )
         }
         prefs.edit().putString(KEY_NOTES, array.toString()).apply()
+    }
+
+    private fun parseBlocks(array: JSONArray?, legacyBody: String, createdAt: Long): List<NoteBlock> {
+        if (array == null || array.length() == 0) {
+            return if (legacyBody.isBlank()) {
+                emptyList()
+            } else {
+                listOf(
+                    NoteBlock(
+                        id = createdAt,
+                        markdown = legacyBody,
+                        rawSource = legacyBody,
+                        status = NoteBlockStatus.Ready,
+                        createdAt = createdAt,
+                        updatedAt = createdAt
+                    )
+                )
+            }
+        }
+        return buildList {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val status = runCatching {
+                    NoteBlockStatus.valueOf(item.optString("status", NoteBlockStatus.Ready.name))
+                }.getOrDefault(NoteBlockStatus.Ready)
+                add(
+                    NoteBlock(
+                        id = item.optLong("id"),
+                        markdown = item.optString("markdown"),
+                        rawSource = item.optString("rawSource"),
+                        status = status,
+                        createdAt = item.optLong("createdAt"),
+                        updatedAt = item.optLong("updatedAt")
+                    )
+                )
+            }
+        }
+    }
+
+    private fun blocksToJson(blocks: List<NoteBlock>): JSONArray {
+        val array = JSONArray()
+        blocks.forEach { block ->
+            array.put(
+                JSONObject()
+                    .put("id", block.id)
+                    .put("markdown", block.markdown)
+                    .put("rawSource", block.rawSource)
+                    .put("status", block.status.name)
+                    .put("createdAt", block.createdAt)
+                    .put("updatedAt", block.updatedAt)
+            )
+        }
+        return array
     }
 
     companion object {

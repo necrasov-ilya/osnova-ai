@@ -27,6 +27,52 @@ dependencies {
     implementation "com.google.android.gms:play-services-tasks:18.4.0"
     implementation "com.google.android.gms:play-services-mlkit-text-recognition:19.0.1"
     implementation "cz.adaptech.tesseract4android:tesseract4android:4.9.0"
+    implementation "io.noties.markwon:core:4.6.2"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2"
+    testImplementation "junit:junit:4.13.2"
+}
+
+tasks.withType(Test).configureEach { task ->
+    if (task.name == "testDebugUnitTest") {
+        def javaTestClasses = layout.buildDirectory.dir("intermediates/javac/debugUnitTest/compileDebugUnitTestJavaWithJavac/classes").get().asFile
+        def runtimeJar = layout.buildDirectory.file("intermediates/runtime_app_classes_jar/debug/bundleDebugClassesToRuntimeJar/classes.jar").get().asFile
+        def javaResources = layout.buildDirectory.dir("intermediates/java_res/debug/processDebugJavaRes/out").get().asFile
+        def rJar = layout.buildDirectory.file("intermediates/compile_and_runtime_r_class_jar/debug/processDebugResources/R.jar").get().asFile
+        def asciiRoot = new File(gradle.gradleUserHomeDir, "osnova-ai-testpath/${rootProject.name}/${project.name}/debug")
+        def asciiTestClasses = new File(asciiRoot, "test-classes")
+        def asciiRuntimeJar = new File(asciiRoot, "runtime/classes.jar")
+        def asciiJavaResources = new File(asciiRoot, "java-res")
+        def asciiRJar = new File(asciiRoot, "r/R.jar")
+
+        task.doFirst {
+            delete(asciiRoot)
+            copy {
+                from javaTestClasses
+                into asciiTestClasses
+            }
+            copy {
+                from runtimeJar
+                into asciiRuntimeJar.parentFile
+            }
+            if (javaResources.exists()) {
+                copy {
+                    from javaResources
+                    into asciiJavaResources
+                }
+            } else {
+                asciiJavaResources.mkdirs()
+            }
+            copy {
+                from rJar
+                into asciiRJar.parentFile
+            }
+
+            task.workingDir = gradle.gradleUserHomeDir
+            task.testClassesDirs = files(asciiTestClasses)
+            task.classpath = files(asciiTestClasses, asciiRuntimeJar, asciiJavaResources, asciiRJar) + task.classpath.filter {
+                !it.absolutePath.startsWith(project.layout.buildDirectory.get().asFile.absolutePath)
+            }
+        }
+    }
 }

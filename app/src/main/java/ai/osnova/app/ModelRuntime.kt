@@ -19,6 +19,7 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -336,11 +337,7 @@ class GemmaRuntime(private val context: Context, private val modelFile: File) : 
     suspend fun summarize(rawText: String): String = withContext(Dispatchers.IO) {
         val conv = conversation ?: return@withContext fallbackSummary(rawText)
         val prompt = """
-            Преврати распознанный с доски текст в короткий блок конспекта.
-            Не добавляй факты, которых нет в тексте.
-
-            Текст:
-            $rawText
+            ${markdownPrompt(rawText)}
         """.trimIndent()
 
         runCatching {
@@ -348,6 +345,26 @@ class GemmaRuntime(private val context: Context, private val modelFile: File) : 
             val text = response.text()
             text.ifBlank { fallbackSummary(rawText) }
         }.getOrElse { fallbackSummary(rawText) }
+    }
+
+    fun streamMarkdown(rawText: String): Flow<String> = flow {
+        val conv = conversation ?: run {
+            emit(fallbackSummary(rawText))
+            return@flow
+        }
+        val prompt = markdownPrompt(rawText)
+        var previous = ""
+        conv.sendMessageAsync(prompt).collect { message ->
+            val current = message.text()
+            if (current.isBlank()) return@collect
+            val delta = if (current.startsWith(previous)) {
+                current.removePrefix(previous)
+            } else {
+                current
+            }
+            previous = current
+            if (delta.isNotBlank()) emit(delta)
+        }
     }
 
     override fun close() {
@@ -373,6 +390,19 @@ class GemmaRuntime(private val context: Context, private val modelFile: File) : 
             .filter { it.isNotEmpty() }
             .joinToString("\n")
             .take(900)
+    }
+
+    private fun markdownPrompt(rawText: String): String {
+        return """
+            Преврати распознанный учебный материал в короткий Markdown-конспект.
+            Верни только Markdown без вступлений и без ```markdown.
+            Не выдумывай факты. Если место не читается, напиши "неразборчиво".
+            Сохраняй списки, формулы и связи, если они есть.
+            Пиши по-русски.
+
+            RAW:
+            $rawText
+        """.trimIndent()
     }
 
     private fun Message.text(): String {

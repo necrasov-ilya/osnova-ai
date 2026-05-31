@@ -12,7 +12,9 @@
 
 - [Черновик архитектуры](architecture/draft.md)
 - [Карта технологий](architecture/technology-map.md)
+- [MVP-архитектура приложения](architecture/mvp-architecture.md)
 - [Модель и рантайм](architecture/model-runtime.md)
+- [Доставка моделей](architecture/model-delivery.md)
 - [Режимы производительности](architecture/performance-modes.md)
 - [Тестовые устройства](architecture/test-devices.md)
 - [Открытые вопросы](architecture/open-questions.md)
@@ -20,6 +22,11 @@
 # Дизайн
 
 - [Дизайн-система](design/design-system.md)
+
+# Разработка
+
+- [Подключённый Android-девайс](development/connected-device.md)
+- [Запуск MVP на телефоне](development/run-mvp.md)
 
 # Работа
 

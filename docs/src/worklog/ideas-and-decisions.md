@@ -20,6 +20,11 @@
 - Зафиксировано первое тестовое устройство: Vivo X200 Ultra на Snapdragon 8 Elite.
 - На этапе продуктового формирования режимы производительности не делаем отдельной фичей, но архитектуру готовим к будущему переключению pipeline.
 - Gemma4-E2B не считается блокером разработки: если она мешает скорости прототипа, используем fallback и продолжаем собирать сценарий.
+- Принято правило доставки моделей: APK обновляется отдельно, `.litertlm` модель хранится как версионированный внешний артефакт и не скачивается заново при каждом debug-обновлении.
+- Добавлен workflow разработки с подключённым Android-девайсом и debug override для модели через app-specific external storage.
+- Старт MVP делается на Kotlin Android без Compose: programmatic UI, CameraX, ML Kit Text Recognition и Gemma/LiteRT-LM runtime-slot.
+- Первый запуск скачивает OCR-модуль ML Kit через Google Play Services `ModuleInstallClient` и Gemma 4 E2B SM8750 `.litertlm`.
+- Gemma обязательна для MVP, но текущая реализация оставляет OCR-поток видимым, если LiteRT-LM на устройстве падает.
 
 ## Формат записи
 

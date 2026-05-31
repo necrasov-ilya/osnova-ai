@@ -1,1 +1,7 @@
 .codex-remote-attachments/
+.gradle/
+build/
+**/build/
+local.properties
+*.apk
+*.aab

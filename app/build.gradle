@@ -1,0 +1,31 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "ai.osnova.app"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "ai.osnova.app"
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName "0.1.0"
+    }
+}
+
+dependencies {
+    implementation "androidx.activity:activity-ktx:1.12.0"
+    implementation "androidx.camera:camera-camera2:1.5.1"
+    implementation "androidx.camera:camera-lifecycle:1.5.1"
+    implementation "androidx.camera:camera-view:1.5.1"
+    implementation "androidx.core:core-ktx:1.17.0"
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.10.0"
+    implementation "com.google.ai.edge.litertlm:litertlm-android:0.12.0"
+    implementation "com.google.android.gms:play-services-base:18.9.0"
+    implementation "com.google.android.gms:play-services-tasks:18.4.0"
+    implementation "com.google.android.gms:play-services-mlkit-text-recognition:19.0.1"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2"
+}

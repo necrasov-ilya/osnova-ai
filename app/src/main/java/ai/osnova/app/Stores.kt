@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import android.graphics.Color
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.abs
 
 class ThemeStore(context: Context) {
     private val prefs = context.getSharedPreferences("theme", Context.MODE_PRIVATE)
@@ -93,11 +92,12 @@ class InsertEngine {
     fun shouldInsert(currentBody: String, candidate: String): Boolean {
         val clean = candidate.cleanForNote()
         if (clean.length < 8) return false
-        val recent = currentBody.takeLast(1500).cleanForCompare()
+        val recent = currentBody.takeLast(2200).cleanForCompare()
         val normalized = clean.cleanForCompare()
         if (normalized.length < 8) return false
         if (recent.contains(normalized.take(normalized.length.coerceAtMost(80)))) return false
-        return similarity(recent.takeLast(280), normalized.take(280)) < 0.72f
+        if (coverage(recent, normalized) >= 0.58f) return false
+        return similarity(recent.takeLast(420), normalized.take(420)) < 0.72f
     }
 
     fun insert(currentBody: String, candidate: String): String {
@@ -128,33 +128,51 @@ class InsertEngine {
         val intersection = left.count { it in right }
         return intersection.toFloat() / (left.size + right.size - intersection).coerceAtLeast(1)
     }
+
+    private fun coverage(recent: String, candidate: String): Float {
+        val recentUnits = recent.semanticUnits()
+        val candidateUnits = candidate.semanticUnits()
+        if (recentUnits.isEmpty() || candidateUnits.isEmpty()) return 0f
+        val matched = candidateUnits.count { it in recentUnits }
+        return matched.toFloat() / candidateUnits.size
+    }
+
+    private fun String.semanticUnits(): Set<String> {
+        val tokens = split(" ")
+            .map { it.trim() }
+            .filter { it.length > 2 }
+        if (tokens.size < 3) return tokens.toSet()
+        return tokens.windowed(size = 3, step = 1)
+            .map { it.joinToString(" ") }
+            .toSet()
+    }
 }
 
 fun palette(mode: OsnovaThemeMode): OsnovaPalette {
-    val accent = Color.rgb(124, 92, 255)
+    val accent = Color.rgb(172, 41, 84)
     return when (mode) {
         OsnovaThemeMode.Mist -> OsnovaPalette(
-            background = Color.rgb(238, 241, 247),
-            surface = Color.rgb(251, 250, 247),
+            background = Color.rgb(245, 242, 235),
+            surface = Color.rgb(255, 252, 246),
             surfaceStrong = Color.WHITE,
-            text = Color.rgb(22, 24, 31),
-            muted = Color.rgb(103, 108, 121),
-            border = Color.argb(38, 31, 35, 48),
+            text = Color.rgb(20, 20, 19),
+            muted = Color.rgb(112, 96, 91),
+            border = Color.argb(42, 20, 20, 19),
             accent = accent,
-            accentSoft = Color.rgb(229, 224, 255),
-            cameraPanel = Color.rgb(18, 19, 26)
+            accentSoft = Color.rgb(244, 218, 226),
+            cameraPanel = Color.rgb(20, 20, 19)
         )
 
         OsnovaThemeMode.Ink -> OsnovaPalette(
-            background = Color.rgb(17, 18, 24),
-            surface = Color.rgb(28, 29, 38),
-            surfaceStrong = Color.rgb(38, 40, 52),
-            text = Color.rgb(245, 244, 238),
-            muted = Color.rgb(167, 169, 184),
-            border = Color.argb(60, 255, 255, 255),
+            background = Color.rgb(20, 20, 19),
+            surface = Color.rgb(32, 31, 30),
+            surfaceStrong = Color.rgb(42, 40, 39),
+            text = Color.rgb(245, 242, 235),
+            muted = Color.rgb(184, 170, 163),
+            border = Color.argb(62, 245, 242, 235),
             accent = accent,
-            accentSoft = Color.rgb(58, 48, 114),
-            cameraPanel = Color.rgb(8, 9, 14)
+            accentSoft = Color.rgb(77, 31, 47),
+            cameraPanel = Color.rgb(8, 8, 7)
         )
     }
 }

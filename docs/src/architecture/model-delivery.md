@@ -67,21 +67,31 @@ context.getExternalFilesDir("models")/{modelId}/{modelVersion}/model.litertlm
   "activeModelId": "gemma4-e2b",
   "models": [
     {
-      "id": "gemma-4-e2b-it-sm8750",
+      "id": "gemma-4-e2b-it",
       "version": "main",
       "runtime": "litert-lm",
       "format": "litertlm",
-      "fileName": "gemma-4-E2B-it_qualcomm_sm8750.litertlm",
-      "sizeBytes": 3016294400,
-      "sha256": "41dd675fbe735b6029012b5576a5716bac614fd8156de0128db4c9dff3cebd4e",
+      "fileName": "gemma-4-E2B-it.litertlm",
+      "sizeBytes": 2588147712,
+      "sha256": "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c",
       "minAppVersion": 1,
-      "downloadUrl": "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it_qualcomm_sm8750.litertlm?download=true"
+      "downloadUrl": "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true"
     }
   ]
 }
 ```
 
 `ModelManager` сравнивает manifest с локальным состоянием. Если активная модель уже есть и хэш совпадает, она используется без скачивания.
+
+SM8750 NPU-файл хранится как отдельный кандидат:
+
+```text
+gemma-4-E2B-it_qualcomm_sm8750.litertlm
+sizeBytes = 3016294400
+sha256 = 41dd675fbe735b6029012b5576a5716bac614fd8156de0128db4c9dff3cebd4e
+```
+
+Его нельзя считать основным MVP-файлом, пока запуск NPU не прошёл smoke-тест на Vivo X200 Ultra.
 
 ## Обновление модели
 

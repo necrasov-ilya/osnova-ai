@@ -11,7 +11,7 @@ android {
         minSdk 26
         targetSdk 36
         versionCode 1
-        versionName "0.1.0"
+        versionName "0.2.0"
     }
 }
 
@@ -26,6 +26,7 @@ dependencies {
     implementation "com.google.android.gms:play-services-base:18.9.0"
     implementation "com.google.android.gms:play-services-tasks:18.4.0"
     implementation "com.google.android.gms:play-services-mlkit-text-recognition:19.0.1"
+    implementation "cz.adaptech.tesseract4android:tesseract4android:4.9.0"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2"
 }

@@ -12,9 +12,10 @@
 - Камерный контейнер.
 - CameraX preview.
 - OCR через ML Kit Text Recognition.
+- Русский OCR fallback через Tesseract `rus+eng`.
 - Скачивание OCR-модуля через Google Play Services.
-- Скачивание Gemma 4 E2B `.litertlm` под Snapdragon 8 Elite.
-- Попытка запуска Gemma через LiteRT-LM.
+- Скачивание Gemma 4 E2B `.litertlm`.
+- Запуск Gemma через LiteRT-LM в отдельном процессе `:gemma`.
 - Вставка распознанного блока в заметку.
 
 ## Первый запуск
@@ -24,14 +25,15 @@
 Кнопка `Скачать модели` делает две вещи:
 
 1. Ставит OCR-модуль ML Kit.
-2. Скачивает `gemma-4-E2B-it_qualcomm_sm8750.litertlm`.
+2. Скачивает `rus.traineddata` и `eng.traineddata` для Tesseract.
+3. Скачивает `gemma-4-E2B-it.litertlm`.
 
-Файл Gemma весит примерно 2.8 GiB. Для первого запуска лучше включить Wi-Fi и держать телефон на зарядке.
+Файл Gemma весит примерно 2.41 GiB. Для первого запуска лучше включить Wi-Fi и держать телефон на зарядке.
 
 После скачивания модель лежит во внутреннем хранилище приложения:
 
 ```text
-files/models/gemma-4-e2b-it-sm8750/main/gemma-4-E2B-it_qualcomm_sm8750.litertlm
+files/models/gemma-4-e2b-it/main/gemma-4-E2B-it.litertlm
 ```
 
 Обычные обновления APK не должны скачивать её заново.
@@ -86,6 +88,8 @@ $env:ANDROID_HOME="$env:LOCALAPPDATA\Android\Sdk"
 7. Навести на текст.
 8. Дождаться очереди `OCR` и блока в заметке.
 9. Закрыть камеру и проверить, что текст остался в редакторе.
+
+Если Gemma не успела ответить или LiteRT-LM вернул ошибку, приложение вставит OCR-текст как запасной результат. Экран заметки не должен закрываться из-за ошибки модельного процесса.
 
 ## Если нужно начать с нуля
 

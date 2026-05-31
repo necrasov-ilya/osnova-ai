@@ -2,10 +2,15 @@ package ai.osnova.app
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -21,14 +26,17 @@ import android.widget.Space
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
@@ -46,9 +54,33 @@ class MainActivity : ComponentActivity() {
     private var queueList: LinearLayout? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var analyzer: TextRecognitionAnalyzer? = null
-    private var gemmaRuntime: GemmaRuntime? = null
-    private var gemmaJob: Job? = null
+    private var pendingCameraHost: FrameLayout? = null
+    private val pendingGemma = mutableMapOf<Long, Pair<String, Job>>()
+    private var gemmaDisabledUntil = 0L
+    private var lastGemmaBusyShownAt = 0L
     private val cameraExecutor = Executors.newSingleThreadExecutor()
+    private val cameraPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            pendingCameraHost?.let { openCameraPanel(it) }
+        } else {
+            Toast.makeText(this, "Камера нужна для live-конспекта", Toast.LENGTH_SHORT).show()
+        }
+    }
+    private val gemmaReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != GemmaWorkerService.ACTION_RESULT) return
+            val requestId = intent.getLongExtra(GemmaWorkerService.EXTRA_REQUEST_ID, -1L)
+            val pending = pendingGemma.remove(requestId) ?: return
+            pending.second.cancel()
+            val error = intent.getStringExtra(GemmaWorkerService.EXTRA_ERROR)
+            val result = intent.getStringExtra(GemmaWorkerService.EXTRA_RESULT_TEXT).orEmpty()
+            if (error != null) {
+                gemmaDisabledUntil = SystemClock.elapsedRealtime() + GEMMA_COOLDOWN_MS
+                addQueue("Gemma", gemmaQueueError(error), false)
+            }
+            insertRecognizedBlock(result.ifBlank { pending.first })
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,19 +92,25 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             if (modelManager.status().ready) showHome() else showModelGate()
         }
+        ContextCompat.registerReceiver(
+            this,
+            gemmaReceiver,
+            IntentFilter(GemmaWorkerService.ACTION_RESULT),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     override fun onDestroy() {
         super.onDestroy()
         stopCamera()
-        gemmaRuntime?.close()
+        runCatching { unregisterReceiver(gemmaReceiver) }
         cameraExecutor.shutdown()
     }
 
     private fun showModelGate() {
         val root = verticalRoot()
         root.gravity = Gravity.CENTER_HORIZONTAL
-        root.setPadding(dp(22), dp(48), dp(22), dp(28))
+        rootPadding(root, left = 22, top = 48, right = 22, bottom = 28)
 
         val title = text("OSNOVA", 46, colors.text, Typeface.create("serif", Typeface.BOLD))
         val status = text("модели нужны на устройстве", 22, colors.text, Typeface.create("sans-serif-condensed", Typeface.BOLD))
@@ -89,8 +127,8 @@ class MainActivity : ComponentActivity() {
         root.addView(status, matchWrap())
         root.addView(detail, matchWrap())
         root.addView(space(26))
-        root.addView(modelCard("OCR", "ML Kit Text Recognition", "быстрый текст с камеры"))
-        root.addView(modelCard("Gemma", "Gemma 4 E2B SM8750", "конспект из распознанного фрагмента"))
+        root.addView(modelCard("OCR", "ML Kit + Tesseract rus/eng", "быстрый текст и русский fallback"))
+        root.addView(modelCard("Gemma", "Gemma 4 E2B", "структура конспекта на устройстве"))
         root.addView(space(22))
         root.addView(progress, matchHeight(dp(8)))
         root.addView(space(16))
@@ -123,7 +161,7 @@ class MainActivity : ComponentActivity() {
     private fun showHome() {
         stopCamera()
         val root = verticalRoot()
-        root.setPadding(dp(18), dp(34), dp(18), dp(12))
+        rootPadding(root, left = 18, top = 34, right = 18, bottom = 30)
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -189,7 +227,7 @@ class MainActivity : ComponentActivity() {
         currentNote = noteStore.get(noteId) ?: return showHome()
         val note = currentNote ?: return
         val root = verticalRoot()
-        root.setPadding(dp(16), dp(30), dp(16), dp(12))
+        rootPadding(root, left = 16, top = 30, right = 16, bottom = 30)
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -256,29 +294,15 @@ class MainActivity : ComponentActivity() {
         root.addView(bottom, matchHeight(dp(78)).apply { topMargin = dp(10) })
 
         setContentView(root)
-        warmGemma()
-    }
-
-    private fun warmGemma() {
-        if (gemmaJob?.isActive == true) return
-        gemmaJob = lifecycleScope.launch {
-            runCatching {
-                val runtime = GemmaRuntime(this@MainActivity, modelManager.gemmaFile())
-                runtime.initialize()
-                gemmaRuntime?.close()
-                gemmaRuntime = runtime
-                addQueue("Gemma", "готова", true)
-            }.onFailure {
-                addQueue("Gemma", it.message ?: "не запустилась", false)
-            }
-        }
     }
 
     private fun openCameraPanel(host: FrameLayout) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION)
+            pendingCameraHost = host
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             return
         }
+        pendingCameraHost = null
         host.removeAllViews()
         val previewView = PreviewView(this).apply {
             background = round(colors.cameraPanel, dp(24), colors.border)
@@ -295,7 +319,15 @@ class MainActivity : ComponentActivity() {
         host.visibility = View.VISIBLE
         host.animate().alpha(1f).setDuration(260).setInterpolator(DecelerateInterpolator()).start()
         queueList?.visibility = View.VISIBLE
-        startCamera(previewView) { state -> badge.text = state }
+        startCamera(
+            previewView = previewView,
+            onText = { text -> runOnUiThread { onRecognizedText(text) } },
+            onState = { state ->
+                runOnUiThread {
+                    if (host.isAttachedToWindow) badge.text = state
+                }
+            }
+        )
     }
 
     private fun closeCameraPanel(host: FrameLayout) {
@@ -307,49 +339,98 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
-    private fun startCamera(previewView: PreviewView, onState: (String) -> Unit) {
+    private fun startCamera(previewView: PreviewView, onText: (String) -> Unit, onState: (String) -> Unit) {
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
-            val provider = providerFuture.get()
-            cameraProvider = provider
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(previewView.surfaceProvider)
-            }
-            analyzer?.close()
-            analyzer = TextRecognitionAnalyzer(
-                onText = { text -> onRecognizedText(text) },
-                onState = onState
-            )
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-                .also { it.setAnalyzer(cameraExecutor, analyzer!!) }
+            runCatching {
+                val provider = providerFuture.get()
+                cameraProvider = provider
+                val preview = Preview.Builder().build().also {
+                    it.setSurfaceProvider(previewView.surfaceProvider)
+                }
+                analyzer?.close()
+                analyzer = TextRecognitionAnalyzer(
+                    onText = onText,
+                    onState = onState,
+                    cyrillicOcr = CyrillicOcrEngine(this)
+                )
+                val analysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                    .also { it.setAnalyzer(cameraExecutor, analyzer!!) }
 
-            provider.unbindAll()
-            provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                provider.unbindAll()
+                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+            }.onFailure { error ->
+                onState("камера не открылась")
+                addQueue("Камера", error.javaClass.simpleName.take(28), false)
+            }
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun stopCamera() {
-        cameraProvider?.unbindAll()
-        analyzer?.close()
+        runCatching { cameraProvider?.unbindAll() }
+        runCatching { analyzer?.close() }
         analyzer = null
     }
 
     private fun onRecognizedText(raw: String) {
-        runOnUiThread { addQueue("OCR", "текст найден", false) }
-        lifecycleScope.launch {
-            val block = runCatching {
-                gemmaRuntime?.summarize(raw) ?: raw
-            }.getOrElse { raw }
-            val editor = bodyEditor ?: return@launch
-            val current = editor.text.toString()
-            if (insertEngine.shouldInsert(current, block)) {
-                editor.setText(insertEngine.insert(current, block))
-                editor.setSelection(editor.text.length)
-                saveCurrentNote()
-                addQueue("Блок", "добавлен", true)
+        val draft = DraftBuilder.build(raw, source = "camera")
+        if (draft == null) {
+            addQueue("Gate", "шум", false)
+            return
+        }
+
+        if (pendingGemma.isNotEmpty()) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastGemmaBusyShownAt > 5_000) {
+                lastGemmaBusyShownAt = now
+                addQueue("Gemma", "ждёт", false)
             }
+            return
+        }
+
+        addQueue("OCR", "текст найден", false)
+        val fallbackBlock = draft.text
+        if (SystemClock.elapsedRealtime() < gemmaDisabledUntil) {
+            addQueue("Gemma", "пауза", false)
+            insertRecognizedBlock(fallbackBlock)
+            return
+        }
+
+        val requestId = System.currentTimeMillis()
+        val timeoutJob = lifecycleScope.launch {
+            delay(28_000)
+            pendingGemma.remove(requestId)
+            gemmaDisabledUntil = SystemClock.elapsedRealtime() + GEMMA_COOLDOWN_MS
+            addQueue("Gemma", "таймаут", false)
+            insertRecognizedBlock(fallbackBlock)
+        }
+        pendingGemma[requestId] = fallbackBlock to timeoutJob
+        val intent = Intent(this, GemmaWorkerService::class.java)
+            .setAction(GemmaWorkerService.ACTION_SUMMARIZE)
+            .putExtra(GemmaWorkerService.EXTRA_REQUEST_ID, requestId)
+            .putExtra(GemmaWorkerService.EXTRA_RAW_TEXT, fallbackBlock)
+        runCatching {
+            startService(intent)
+            addQueue("Gemma", "обрабатывает", false)
+        }.onFailure {
+            timeoutJob.cancel()
+            pendingGemma.remove(requestId)
+            gemmaDisabledUntil = SystemClock.elapsedRealtime() + GEMMA_COOLDOWN_MS
+            addQueue("Gemma", "не запущена", false)
+            insertRecognizedBlock(fallbackBlock)
+        }
+    }
+
+    private fun insertRecognizedBlock(block: String) {
+        val editor = bodyEditor ?: return
+        val current = editor.text.toString()
+        if (insertEngine.shouldInsert(current, block)) {
+            editor.setText(insertEngine.insert(current, block))
+            editor.setSelection(editor.text.length)
+            saveCurrentNote()
+            addQueue("Блок", "добавлен", true)
         }
     }
 
@@ -377,6 +458,19 @@ class MainActivity : ComponentActivity() {
         if (list.childCount > 3) list.removeViewAt(0)
     }
 
+    private fun gemmaQueueError(error: String): String {
+        val normalized = error.lowercase()
+        return when {
+            "npu" in normalized -> "NPU не поднялась"
+            "gpu" in normalized -> "GPU не поднялась"
+            "timeout" in normalized -> "таймаут"
+            "sha256" in normalized -> "битая модель"
+            "not found" in normalized || "не найдена" in normalized -> "модель не найдена"
+            "failed" in normalized -> "runtime не стартовал"
+            else -> error.take(34)
+        }
+    }
+
     private fun noteCard(note: Note): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -402,6 +496,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun verticalRoot(): LinearLayout {
+        applyWindowChrome()
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(colors.background)
@@ -456,7 +551,37 @@ class MainActivity : ComponentActivity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    companion object {
-        private const val CAMERA_PERMISSION = 4001
+    private fun rootPadding(root: View, left: Int, top: Int, right: Int, bottom: Int) {
+        val baseLeft = dp(left)
+        val baseTop = dp(top)
+        val baseRight = dp(right)
+        val baseBottom = dp(bottom)
+        root.setPadding(baseLeft, baseTop, baseRight, baseBottom)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(
+                baseLeft + bars.left,
+                baseTop + bars.top,
+                baseRight + bars.right,
+                baseBottom + bars.bottom
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(root)
     }
+
+    private fun applyWindowChrome() {
+        window.statusBarColor = colors.background
+        window.navigationBarColor = colors.background
+        window.decorView.systemUiVisibility = if (mode == OsnovaThemeMode.Mist) {
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        } else {
+            0
+        }
+    }
+
+    companion object {
+        private const val GEMMA_COOLDOWN_MS = 60_000L
+    }
+
 }

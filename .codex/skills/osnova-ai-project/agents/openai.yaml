@@ -1,0 +1,4 @@
+interface:
+  display_name: "OSNOVA AI Project"
+  short_description: "Правила продукта и документации OSNOVA AI"
+  default_prompt: "Используй $osnova-ai-project для документации, пайплайна и рабочих соглашений OSNOVA AI."

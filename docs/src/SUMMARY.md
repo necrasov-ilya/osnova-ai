@@ -14,6 +14,7 @@
 - [Карта технологий](architecture/technology-map.md)
 - [Модель и рантайм](architecture/model-runtime.md)
 - [Режимы производительности](architecture/performance-modes.md)
+- [Тестовые устройства](architecture/test-devices.md)
 - [Открытые вопросы](architecture/open-questions.md)
 
 # Дизайн
